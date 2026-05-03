@@ -1,0 +1,82 @@
+#!/bin/bash
+# helpnet - quick network overview
+
+# Colors
+B='\033[1m' D='\033[0m' G='\033[32m' R='\033[31m' Y='\033[33m'
+
+# WiFi
+wifi_if="en0"
+wifi_ip=$(ipconfig getifaddr "$wifi_if" 2>/dev/null)
+wifi_ssid=$(ipconfig getsummary "$wifi_if" 2>/dev/null | awk -F': ' '/SSID/{print $2; exit}')
+if [[ -n "$wifi_ip" ]]; then
+  printf "${B}WiFi:${D}     ${G}%s${D}  (%s)\n" "$wifi_ip" "${wifi_ssid:-unknown}"
+else
+  printf "${B}WiFi:${D}     ${R}disconnected${D}\n"
+fi
+
+# Ethernet — discover dynamically from networksetup to handle any enN number
+hw_ports=$(networksetup -listallhardwareports 2>/dev/null)
+eth_found=false
+while IFS= read -r line; do
+  if echo "$line" | grep -qi "ethernet\|thunderbolt\|usb.*lan\|usb.*ethernet"; then
+    eth_if=$(echo "$hw_ports" | grep -A1 "^${line}$" | awk '/^Device:/{print $2}')
+    [[ -z "$eth_if" ]] && continue
+    eth_ip=$(ipconfig getifaddr "$eth_if" 2>/dev/null)
+    if [[ -n "$eth_ip" ]]; then
+      label=$(echo "$line" | sed 's/^Hardware Port: //')
+      printf "${B}Ethernet:${D} ${G}%s${D}  (%s — %s)\n" "$eth_ip" "$eth_if" "$label"
+      eth_found=true
+    fi
+  fi
+done < <(echo "$hw_ports" | grep "^Hardware Port:")
+$eth_found || printf "${B}Ethernet:${D} ${R}disconnected${D}\n"
+
+# Default Gateway
+gw=$(route -n get default 2>/dev/null | awk '/gateway/{print $2}')
+printf "${B}Gateway:${D}  %s\n" "${gw:-none}"
+
+# DNS
+dns=$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3}' | sort -u | head -4 | tr '\n' ' ')
+printf "${B}DNS:${D}      %s\n" "${dns:-none}"
+
+# Public IP + Location — HTTPS to prevent response spoofing on untrusted networks
+pub_json=$(curl -s --max-time 3 https://ipinfo.io 2>/dev/null)
+pub=$(echo "$pub_json" | grep '"ip"' | cut -d'"' -f4)
+loc_city=$(echo "$pub_json" | grep '"city"' | cut -d'"' -f4)
+loc_region=$(echo "$pub_json" | grep '"region"' | cut -d'"' -f4)
+loc_country=$(echo "$pub_json" | grep '"country"' | cut -d'"' -f4)
+
+# Internet connectivity — derived from whether the ipinfo.io fetch succeeded
+if [[ -n "$pub" ]]; then
+  printf "${B}Internet:${D} ${G}reachable${D}\n"
+else
+  printf "${B}Internet:${D} ${R}unreachable${D}\n"
+fi
+
+printf "${B}Public:${D}   %s\n" "${pub:-n/a}"
+if [[ -n "$loc_city" ]]; then
+  printf "${B}Location:${D} %s, %s, %s\n" "$loc_city" "$loc_region" "$loc_country"
+fi
+
+# VPN
+vpn_active=false
+# Check utun interfaces (common for VPN)
+while IFS= read -r iface; do
+  if [[ "$iface" == utun* ]]; then
+    has_ip=$(ifconfig "$iface" 2>/dev/null | grep "inet " | grep -v "127\.")
+    if [[ -n "$has_ip" ]]; then
+      vpn_active=true
+      break
+    fi
+  fi
+done < <(ifconfig -l 2>/dev/null | tr ' ' '\n')
+# Also check scutil for VPN services
+if ! $vpn_active; then
+  scutil --nc list 2>/dev/null | grep -q "Connected" && vpn_active=true
+fi
+
+if $vpn_active; then
+  printf "${B}VPN:${D}      ${G}ON${D}\n"
+else
+  printf "${B}VPN:${D}      ${R}OFF${D}\n"
+fi

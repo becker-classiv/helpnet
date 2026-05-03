@@ -1,0 +1,125 @@
+#!/bin/bash
+# helpnet - quick network overview (Linux)
+
+# Colors
+B='\033[1m' D='\033[0m' G='\033[32m' R='\033[31m' Y='\033[33m'
+
+# Helper: determine interface type
+iface_type() {
+  local ifc="$1"
+  if [[ -d "/sys/class/net/$ifc/wireless" ]] || [[ -e "/sys/class/net/$ifc/phy80211" ]]; then
+    echo "wifi"
+  elif [[ -e "/sys/class/net/$ifc/tun_flags" ]]; then
+    echo "tun"
+  elif [[ "$ifc" == lo ]]; then
+    echo "loopback"
+  elif [[ "$ifc" == docker* || "$ifc" == br-* || "$ifc" == veth* || "$ifc" == virbr* ]]; then
+    echo "virtual"
+  else
+    # Fallback: check DEVTYPE in uevent
+    local dt=$(grep -s DEVTYPE "/sys/class/net/$ifc/uevent" 2>/dev/null | cut -d= -f2)
+    if [[ "$dt" == "wlan" ]]; then echo "wifi"
+    else echo "ethernet"
+    fi
+  fi
+}
+
+# Helper: get first IPv4 for an interface
+iface_ip() {
+  ip -o -4 addr show dev "$1" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1
+}
+
+# Walk interfaces, classify
+wifi_ip="" wifi_if="" wifi_ssid=""
+eth_ip=""  eth_if=""
+for ifc in $(ls /sys/class/net/ 2>/dev/null); do
+  [[ "$ifc" == lo ]] && continue
+  # Skip down interfaces
+  oper=$(cat "/sys/class/net/$ifc/operstate" 2>/dev/null)
+  [[ "$oper" != "up" && "$oper" != "unknown" ]] && continue
+  ip=$(iface_ip "$ifc")
+  [[ -z "$ip" ]] && continue
+  case "$(iface_type "$ifc")" in
+    wifi)
+      if [[ -z "$wifi_ip" ]]; then
+        wifi_ip="$ip"; wifi_if="$ifc"
+      fi
+      ;;
+    ethernet)
+      if [[ -z "$eth_ip" ]]; then
+        eth_ip="$ip"; eth_if="$ifc"
+      fi
+      ;;
+  esac
+done
+
+# WiFi
+if [[ -n "$wifi_ip" ]]; then
+  if command -v iwgetid >/dev/null 2>&1; then
+    wifi_ssid=$(iwgetid -r "$wifi_if" 2>/dev/null)
+  elif command -v nmcli >/dev/null 2>&1; then
+    wifi_ssid=$(nmcli -t -f active,ssid dev wifi 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}')
+  elif command -v iw >/dev/null 2>&1; then
+    wifi_ssid=$(iw dev "$wifi_if" link 2>/dev/null | awk -F': ' '/SSID/{print $2; exit}')
+  fi
+  printf "${B}WiFi:${D}     ${G}${wifi_ip}${D}  (${wifi_ssid:-unknown})\n"
+else
+  printf "${B}WiFi:${D}     ${R}disconnected${D}\n"
+fi
+
+# Ethernet
+if [[ -n "$eth_ip" ]]; then
+  printf "${B}Ethernet:${D} ${G}${eth_ip}${D}  (${eth_if})\n"
+else
+  printf "${B}Ethernet:${D} ${R}disconnected${D}\n"
+fi
+
+# Default Gateway
+gw=$(ip route show default 2>/dev/null | awk '/default/{print $3; exit}')
+printf "${B}Gateway:${D}  ${gw:-none}\n"
+
+# DNS
+dns=""
+if command -v resolvectl >/dev/null 2>&1; then
+  dns=$(resolvectl dns 2>/dev/null | awk '{for(i=2;i<=NF;i++) print $i}' | sort -u | head -4 | tr '\n' ' ')
+fi
+if [[ -z "${dns// /}" && -r /etc/resolv.conf ]]; then
+  dns=$(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null | sort -u | head -4 | tr '\n' ' ')
+fi
+printf "${B}DNS:${D}      ${dns:-none}\n"
+
+# Public IP + Location (with short timeout)
+pub_json=$(curl -s --max-time 3 ipinfo.io 2>/dev/null)
+pub=$(echo "$pub_json" | grep '"ip"' | cut -d'"' -f4)
+loc_city=$(echo "$pub_json" | grep '"city"' | cut -d'"' -f4)
+loc_region=$(echo "$pub_json" | grep '"region"' | cut -d'"' -f4)
+loc_country=$(echo "$pub_json" | grep '"country"' | cut -d'"' -f4)
+printf "${B}Public:${D}   ${pub:-timeout}\n"
+if [[ -n "$loc_city" ]]; then
+  printf "${B}Location:${D} ${loc_city}, ${loc_region}, ${loc_country}\n"
+fi
+
+# VPN: look for tun/tap/wg interfaces with an IP, or active nmcli vpn
+vpn_active=false
+for ifc in $(ls /sys/class/net/ 2>/dev/null); do
+  case "$ifc" in
+    tun*|tap*|wg*|ppp*|tailscale*)
+      oper=$(cat "/sys/class/net/$ifc/operstate" 2>/dev/null)
+      [[ "$oper" != "up" && "$oper" != "unknown" ]] && continue
+      has_ip=$(iface_ip "$ifc")
+      if [[ -n "$has_ip" ]]; then
+        vpn_active=true
+        break
+      fi
+      ;;
+  esac
+done
+if ! $vpn_active && command -v nmcli >/dev/null 2>&1; then
+  nmcli -t -f type,state con show --active 2>/dev/null | grep -q '^vpn:activated' && vpn_active=true
+fi
+
+if $vpn_active; then
+  printf "${B}VPN:${D}      ${G}ON${D}\n"
+else
+  printf "${B}VPN:${D}      ${R}OFF${D}\n"
+fi
