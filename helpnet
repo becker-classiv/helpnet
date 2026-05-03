@@ -4,8 +4,8 @@
 # Colors
 B='\033[1m' D='\033[0m' G='\033[32m' R='\033[31m' Y='\033[33m'
 
-# WiFi
-wifi_if="en0"
+# WiFi — discover dynamically so en0/en1 assignment doesn't matter
+wifi_if=$(networksetup -listallhardwareports 2>/dev/null | awk '/Hardware Port: Wi-Fi/{getline; print $2}')
 wifi_ip=$(ipconfig getifaddr "$wifi_if" 2>/dev/null)
 wifi_ssid=$(ipconfig getsummary "$wifi_if" 2>/dev/null | awk -F': ' '/SSID/{print $2; exit}')
 if [[ -n "$wifi_ip" ]]; then
@@ -19,7 +19,8 @@ hw_ports=$(networksetup -listallhardwareports 2>/dev/null)
 eth_found=false
 while IFS= read -r line; do
   if echo "$line" | grep -qi "ethernet\|thunderbolt\|usb.*lan\|usb.*ethernet"; then
-    eth_if=$(echo "$hw_ports" | grep -A1 "^${line}$" | awk '/^Device:/{print $2}')
+    # Use awk exact-string match to avoid regex issues with parens in port names
+    eth_if=$(awk -v port="$line" '$0==port{getline; if(/^Device:/) print $2}' <<< "$hw_ports")
     [[ -z "$eth_if" ]] && continue
     eth_ip=$(ipconfig getifaddr "$eth_if" 2>/dev/null)
     if [[ -n "$eth_ip" ]]; then
