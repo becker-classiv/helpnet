@@ -59,23 +59,25 @@ if [[ -n "$loc_city" ]]; then
 fi
 
 # VPN
-vpn_active=false
-# Check utun interfaces (common for VPN)
+vpn_iface="" vpn_ip=""
 while IFS= read -r iface; do
   if [[ "$iface" == utun* ]]; then
-    has_ip=$(ifconfig "$iface" 2>/dev/null | grep "inet " | grep -v "127\.")
+    has_ip=$(ifconfig "$iface" 2>/dev/null | grep "inet " | grep -v "127\." | awk '{print $2}')
     if [[ -n "$has_ip" ]]; then
-      vpn_active=true
+      vpn_iface="$iface"
+      vpn_ip="$has_ip"
       break
     fi
   fi
 done < <(ifconfig -l 2>/dev/null | tr ' ' '\n')
 # Also check scutil for VPN services
-if ! $vpn_active; then
-  scutil --nc list 2>/dev/null | grep -q "Connected" && vpn_active=true
+if [[ -z "$vpn_iface" ]]; then
+  scutil --nc list 2>/dev/null | grep -q "Connected" && vpn_iface="scutil"
 fi
 
-if $vpn_active; then
+if [[ -n "$vpn_iface" && "$vpn_iface" != "scutil" ]]; then
+  printf "${B}VPN:${D}      ${G}ON${D}  (%s — %s)\n" "$vpn_iface" "$vpn_ip"
+elif [[ "$vpn_iface" == "scutil" ]]; then
   printf "${B}VPN:${D}      ${G}ON${D}\n"
 else
   printf "${B}VPN:${D}      ${R}OFF${D}\n"
