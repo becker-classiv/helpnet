@@ -100,7 +100,7 @@ if [[ -n "$loc_city" ]]; then
 fi
 
 # VPN: look for tun/tap/wg interfaces with an IP, or active nmcli vpn
-vpn_active=false
+vpn_iface="" vpn_ip=""
 for ifc in $(ls /sys/class/net/ 2>/dev/null); do
   case "$ifc" in
     tun*|tap*|wg*|ppp*|tailscale*)
@@ -108,17 +108,20 @@ for ifc in $(ls /sys/class/net/ 2>/dev/null); do
       [[ "$oper" != "up" && "$oper" != "unknown" ]] && continue
       has_ip=$(iface_ip "$ifc")
       if [[ -n "$has_ip" ]]; then
-        vpn_active=true
+        vpn_iface="$ifc"
+        vpn_ip="$has_ip"
         break
       fi
       ;;
   esac
 done
-if ! $vpn_active && command -v nmcli >/dev/null 2>&1; then
-  nmcli -t -f type,state con show --active 2>/dev/null | grep -q '^vpn:activated' && vpn_active=true
+if [[ -z "$vpn_iface" ]] && command -v nmcli >/dev/null 2>&1; then
+  nmcli -t -f type,state con show --active 2>/dev/null | grep -q '^vpn:activated' && vpn_iface="nmcli"
 fi
 
-if $vpn_active; then
+if [[ -n "$vpn_iface" && "$vpn_iface" != "nmcli" ]]; then
+  printf "${B}VPN:${D}      ${G}ON${D}  (%s — %s)\n" "$vpn_iface" "$vpn_ip"
+elif [[ "$vpn_iface" == "nmcli" ]]; then
   printf "${B}VPN:${D}      ${G}ON${D}\n"
 else
   printf "${B}VPN:${D}      ${R}OFF${D}\n"
